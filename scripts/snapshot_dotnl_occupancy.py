@@ -1,16 +1,17 @@
-"""Take one time-series snapshot of DOT-NL station occupancy and append it to
-dotnl_occupancy_snapshots (never dropped/truncated -- this accumulates real
-occupancy history over time for training the forecast model, replacing the
-dashboard's current simulated peak-occupancy model).
+"""Take one DOT-NL occupancy reading and fold it into dotnl_occupancy_hourly_avg
+as a running average per station per (day_of_week, hour_of_day) bucket --
+NOT an ever-growing raw log. A raw per-run log measured ~13MB/run (~1.2GB/day
+at a 15-min interval), which blows through any free-tier database within
+days; this table is instead capped at station_count x 7 x 24 rows forever,
+which is what a hour-of-week forecast model actually needs anyway.
 
 Reuses the tile-crawling fetch logic from ingest_ndw_dotnl.py (same NDW API,
-same NL bbox/tiling/country-filter handling) instead of duplicating it --
-this script only differs in what it does with the features: append a
-timestamped occupancy row per station instead of replacing raw_ndw_dotnl.
+same NL bbox/tiling/country-filter handling) instead of duplicating it.
 """
 
 import os
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import psycopg
 from dotenv import load_dotenv
@@ -18,19 +19,49 @@ from ingest_ndw_dotnl import NL_BBOX, INITIAL_TILE_SIZE, collect_features, tile_
 
 load_dotenv()
 
+NL_TZ = ZoneInfo("Europe/Amsterdam")
+
 CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS dotnl_occupancy_snapshots (
-    id SERIAL PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS dotnl_occupancy_hourly_avg (
     ndw_id TEXT NOT NULL,
-    captured_at TIMESTAMPTZ NOT NULL,
-    total_connectors INT NOT NULL,
-    available_connectors INT NOT NULL,
-    occupancy_pct DOUBLE PRECISION,
+    day_of_week SMALLINT NOT NULL,  -- 0=Monday .. 6=Sunday, Europe/Amsterdam local time
+    hour_of_day SMALLINT NOT NULL,  -- 0-23, Europe/Amsterdam local time
+    sample_count INT NOT NULL DEFAULT 0,
+    avg_occupancy_pct DOUBLE PRECISION,
+    total_connectors INT,
     lon DOUBLE PRECISION,
-    lat DOUBLE PRECISION
+    lat DOUBLE PRECISION,
+    last_updated TIMESTAMPTZ,
+    PRIMARY KEY (ndw_id, day_of_week, hour_of_day)
 );
-CREATE INDEX IF NOT EXISTS idx_dotnl_occupancy_ndw_id_time
-    ON dotnl_occupancy_snapshots (ndw_id, captured_at);
+"""
+
+# Incremental running-average upsert (Welford-style): each new reading nudges
+# the stored average toward itself by 1/(n+1), so the table never needs the
+# raw history to keep the mean accurate. total_connectors/lon/lat aren't
+# averaged -- a station's own latest reading is representative enough for
+# those, so we just overwrite them.
+UPSERT_SQL = """
+INSERT INTO dotnl_occupancy_hourly_avg
+    (ndw_id, day_of_week, hour_of_day, sample_count, avg_occupancy_pct, total_connectors, lon, lat, last_updated)
+SELECT * FROM unnest(
+    %(ndw_ids)s::text[], %(dows)s::smallint[], %(hods)s::smallint[], %(ones)s::int[],
+    %(occs)s::double precision[], %(totals)s::int[], %(lons)s::double precision[],
+    %(lats)s::double precision[], %(times)s::timestamptz[]
+)
+ON CONFLICT (ndw_id, day_of_week, hour_of_day) DO UPDATE SET
+    sample_count = dotnl_occupancy_hourly_avg.sample_count + 1,
+    avg_occupancy_pct = CASE
+        WHEN EXCLUDED.avg_occupancy_pct IS NULL THEN dotnl_occupancy_hourly_avg.avg_occupancy_pct
+        WHEN dotnl_occupancy_hourly_avg.avg_occupancy_pct IS NULL THEN EXCLUDED.avg_occupancy_pct
+        ELSE dotnl_occupancy_hourly_avg.avg_occupancy_pct
+            + (EXCLUDED.avg_occupancy_pct - dotnl_occupancy_hourly_avg.avg_occupancy_pct)
+              / (dotnl_occupancy_hourly_avg.sample_count + 1)
+    END,
+    total_connectors = EXCLUDED.total_connectors,
+    lon = EXCLUDED.lon,
+    lat = EXCLUDED.lat,
+    last_updated = EXCLUDED.last_updated;
 """
 
 
@@ -50,14 +81,19 @@ def get_connection():
     )
 
 
-def feature_to_row(feat, captured_at):
+def feature_to_bucket_row(feat, captured_at_utc):
     props = feat.get("properties", {})
     availabilities = props.get("availabilities") or []
     total = sum(a.get("total") or 0 for a in availabilities)
     available = sum(a.get("available") or 0 for a in availabilities)
     occupancy_pct = round((1 - available / total) * 100, 1) if total > 0 else None
     lon, lat = feat["geometry"]["coordinates"][:2]
-    return (feat.get("id"), captured_at, total, available, occupancy_pct, lon, lat)
+
+    local = captured_at_utc.astimezone(NL_TZ)
+    day_of_week = local.weekday()  # 0=Monday .. 6=Sunday
+    hour_of_day = local.hour
+
+    return (feat.get("id"), day_of_week, hour_of_day, occupancy_pct, total, lon, lat)
 
 
 def take_snapshot():
@@ -73,21 +109,27 @@ def take_snapshot():
 
     nl_features = [f for f in all_features if f["properties"].get("country") == "NLD"]
     captured_at = datetime.now(timezone.utc)
-    rows = [feature_to_row(f, captured_at) for f in nl_features]
+    rows = [feature_to_bucket_row(f, captured_at) for f in nl_features]
 
     with conn.cursor() as cur:
-        cur.executemany(
-            """
-            INSERT INTO dotnl_occupancy_snapshots
-                (ndw_id, captured_at, total_connectors, available_connectors, occupancy_pct, lon, lat)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """,
-            rows,
+        cur.execute(
+            UPSERT_SQL,
+            {
+                "ndw_ids": [r[0] for r in rows],
+                "dows": [r[1] for r in rows],
+                "hods": [r[2] for r in rows],
+                "ones": [1] * len(rows),
+                "occs": [r[3] for r in rows],
+                "totals": [r[4] for r in rows],
+                "lons": [r[5] for r in rows],
+                "lats": [r[6] for r in rows],
+                "times": [captured_at] * len(rows),
+            },
         )
     conn.commit()
     conn.close()
 
-    known_occupancy = [r[4] for r in rows if r[4] is not None]
+    known_occupancy = [r[3] for r in rows if r[3] is not None]
     avg_occupancy = round(sum(known_occupancy) / len(known_occupancy), 1) if known_occupancy else None
     print(
         f"[{captured_at.isoformat()}] Snapshot: {len(rows)} stations, "
