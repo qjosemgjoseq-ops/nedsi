@@ -4,6 +4,24 @@ A running log of bugs, environment quirks, and upstream data/API surprises hit w
 
 ---
 
+## 2026-07-12 — Grid station open data: Stedin's data is far sparser than advertised, Liander WFS has a broken pagination parameter, Enexis has no direct-download option
+
+**Symptom/context:** Ingesting real electricity substation locations (Liander + Stedin open data) for a new `grid_stations` map layer, to show "which physical station serves this area" instead of just an abstract congestion color.
+
+**Finding 1 (Stedin data quality):** Stedin's "station" shapefiles (`hoogspanningsstations.zip`, `middenspanningsstations.zip`) are building-footprint POLYGONS, not point locations, and the only attribute field (`Hoogspa_ID` / `Middens_ID`) is empty in **100% of records** (checked all 34,569 middenspanning + 1,104 hoogspanning rows). Stedin's own page footnotes this ("Wat voor soort component het betreft wordt niet getoond"), but doesn't make clear the ID field is *entirely* unpopulated, not just sometimes. We use each polygon's centroid as the point location; popups show only "Stedin" with no name/voltage, unlike Liander's data.
+
+**Finding 2 (Liander WFS bug):** Liander's public WFS (`dservices1.arcgis.com/.../Liander_Open_Data_Elektra_WFS/WFSServer`) advertises standard WFS 2.0 `startIndex` pagination, but any `startIndex > 0` silently returns zero features regardless of the real dataset size (58,328 middenspanning stations exist; only the first 3,000-feature page was ever reachable via startIndex). Worked around by tiling the Netherlands into a `BBOX`-filtered grid instead (same recursive-split-when-saturated pattern as `ingest_ndw_dotnl.py`), which does work correctly and retrieves the full dataset.
+
+**Finding 3 (Enexis):** Enexis has no direct-download open dataset for station locations at all (as of today) — their "Open Data" page routes every dataset request through the shared "Partners in Energie" portal, with a stated 5-business-day turnaround and possible costs. Not included in `grid_stations`.
+
+**Fix:** `scripts/ingest_grid_stations.py` ingests Liander (bbox-tiled WFS, rich data: name + voltage level) and Stedin (shapefile, centroid-only, no name) into one `grid_stations` table (94,905 rows total). Enexis skipped.
+
+**Files:** `scripts/ingest_grid_stations.py`, `webapp/app/backend/routers/grid_stations.py`
+
+**Impact:** Anyone building on Stedin's "station" open data should not expect per-station identifiers or names -- only anonymous point locations. Anyone paginating Liander's WFS beyond the first page needs to use BBOX tiling, not `startIndex`.
+
+---
+
 ## 2026-07-11 — Congestie Kaart Zuid-Holland still shows slight cross-province overlap (deferred)
 
 **Symptom:** After switching province-scope filtering from bbox rectangles to real CBS polygon `ST_Contains`/`ST_Intersects` (see the province-bbox-leakage fix below), the user reports the Zuid-Holland "Congestie Kaart" section still shows a small amount of overlap into a neighboring province. All other provinces (verified: Utrecht) looked clean after the fix.
