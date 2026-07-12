@@ -4,6 +4,16 @@ A running log of bugs, environment quirks, and upstream data/API surprises hit w
 
 ---
 
+## 2026-07-12 — NEDSI's own "laadpalen" labeling is imprecise vs. official RVO/NAL definitions; municipal register cross-check inconclusive
+
+**Finding 1 (self-audit, actionable):** Per the official RVO/Revnext Trendrapport 2025 (Bijlage A definities), a *laadpaal* can contain multiple *laadpunten* (one laadpunt = one vehicle at a time). Checked the real NDW DOT-NL data: of 5,000 sampled `raw_ndw_dotnl` features, 81.8% have exactly 2 connectors in their `availabilities` array (`total`), and some have up to 12 -- meaning most DOT-NL "features" represent a physical location that can itself contain multiple poles/connectors, not a single laadpunt. NEDSI's dashboard/PDF consistently label golden_stations counts as "laadpalen" (e.g. "Totaal aantal laadpalen", the "1000 palen" badge) -- this underclaims true laadpunt (connector) counts by roughly 2x on average, and is imprecise for the higher-connector-count locations (small hubs, more accurately "laadlocaties"). This is a NEDSI-side labeling issue, not a defect in NDW's own data (the `availabilities.total` field is exactly what's needed to report both correctly) -- fixed by adding a real total-connector count alongside the existing location count in the PDF report.
+
+**Finding 2 (municipal cross-check, inconclusive -- not reportable to NDW):** Compared golden_stations against Eindhoven's official open-data charging register (`data.eindhoven.nl/api/v2/catalog/datasets/oplaadpalen`, 1,017 "Bestaand" rows) within Eindhoven's bbox: golden_stations shows 1,647, i.e. *higher* than the municipal count, not lower. Most likely explanation: Eindhoven's register is scoped specifically to public on-street EV parking bays ("Parkeervak voor elektrisch laden"), while golden_stations (NDW+OSM+OCM fused) also includes private/semi-public locations (supermarkets, hotels, etc.) outside that narrower scope, and the bbox comparison itself is imprecise (Eindhoven's rectangular bbox bleeds into neighboring gemeenten). This is a scope mismatch between two different dataset definitions, not a clear data-quality defect in either source -- flagging as inconclusive rather than overclaiming a finding. A real comparison would need the same "publicly accessible" scope on both sides and a real gemeente polygon, not a bbox.
+
+**Files:** `webapp/app/frontend/src/lib/generatePlaatsingsAdviesPdf.ts` (added total connector count)
+
+---
+
 ## 2026-07-12 — Grid station open data: Stedin's data is far sparser than advertised, Liander WFS has a broken pagination parameter, Enexis has no direct-download option
 
 **Symptom/context:** Ingesting real electricity substation locations (Liander + Stedin open data) for a new `grid_stations` map layer, to show "which physical station serves this area" instead of just an abstract congestion color.
