@@ -255,3 +255,15 @@ A running log of bugs, environment quirks, and upstream data/API surprises hit w
 **Files:** `requirements.txt`
 
 **Impact:** Different import (`import psycopg` not `psycopg2`) and slightly different API, used consistently across the project from the start.
+
+## 2026-07-12 — Adjusted option 3 per user correction: Mijnaansluiting.nl is the legal single entry point; storing must be per-CPO, not per-DSO
+
+**Context:** Initial DSO deep-links implementation routed "aansluiting aanvragen" (connection requests) to each grid operator's own request page. User corrected this: per the Elektriciteitswet, Mijnaansluiting.nl is the single legally mandated entry point for every connection request in NL, regardless of which DSO serves the address -- so that link must be constant, not DSO-specific.
+
+**Second correction:** "Storingen melden" (fault reporting) was pointing at the grid DSO's outage page, but that's for area-wide electricity outages, not individual broken charging stations. User wants per-station fault reporting routed to the charging point OPERATOR (CPO) known from NDW data (`operator_name` field), not the grid DSO.
+
+**Fix:** `webapp/app/backend/routers/netbeheerder.py` now returns a constant `mijnaansluiting.nl` link for `aanvraag` regardless of DSO; kept DSO `storing`/`check` links as-is (still valid for genuine grid-level outages). Added `webapp/app/backend/routers/cpo_support.py` with verified real contact info (phone + support URL, checked live 2026-07-12) for the top 10 CPOs by station count (~91.5% of all 66,370 DOT-NL stations: Vattenfall InCharge, EQUANS, TotalEnergies, Allego, E-Flux by Road, Ubitricity, Laadnet, Eneco, Fastned, Shell Recharge). For the long tail (~87 other operators), an honest fallback message directs users to the phone number printed on the charging station's own sticker -- not fabricated, this is literally what multiple CPOs' own support pages tell users to do when their operator isn't in a lookup database.
+
+**Note:** ChargeProb.com (a would-be universal storing-lookup platform covering many CPOs via one URL pattern) was checked as a potential shortcut but was returning a server error (site down) at the time -- too unreliable to build on, so a curated table was used instead.
+
+**Files:** `webapp/app/backend/routers/netbeheerder.py`, `webapp/app/backend/routers/cpo_support.py`, `webapp/app/frontend/src/components/dashboard/PostcodeSearch.tsx`
