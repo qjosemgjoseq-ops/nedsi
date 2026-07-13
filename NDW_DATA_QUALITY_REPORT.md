@@ -132,3 +132,25 @@ MUST be coordinate-aware (removal vs re-keying), not id-based.
 stable across submissions (OCPI intends ids to be persistent identifiers), and
 consider NDW-side detection of same-location re-keying to preserve station
 history.
+
+### Root cause (update 2026-07-14): colon->hyphen id-format migration
+
+Building the national id-stability registry revealed that **~54% of the "churn"
+(91 of 168 events) is a systematic OCPI id-format migration**, not per-station
+instability: the same station re-keyed from the legacy colon scheme to the
+current hyphen scheme, e.g.
+
+    NL:GFX:e9c91454-...  ->  NL-GFX-DFB74BCB-...   (TotalEnergies, same spot)
+    NL:BPC:d6b57dd4-...  ->  NL-BPE-2aeb7adc-...   (bp pulse -- party code ALSO changed BPC->BPE)
+
+So a large share of "disappeared" stations is one platform-wide reformatting
+event. Any consumer keyed on the old id string (colon form, or the old party
+code) silently lost every affected station. This is more actionable than
+"random churn": it points at a specific, datable migration to coordinate with
+CPOs/platforms, and argues for NDW enforcing a single stable id scheme.
+
+Now monitored continuously: the station registry + id-churn event log
+(dotnl_station_registry / dotnl_idchurn_events) are updated by the existing
+15-min DOT-NL cron, so NDW can watch new id-changes per CPO as they happen and
+track them to resolution. Surfaced in the webapp under Datakwaliteit ->
+"Id-stabiliteit & verdwenen stations".

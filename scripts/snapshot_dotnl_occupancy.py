@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 import psycopg
 from dotenv import load_dotenv
 from ingest_ndw_dotnl import NL_BBOX, INITIAL_TILE_SIZE, collect_features, tile_grid
+from dotnl_registry import ensure_tables, maybe_detect_daily, upsert_registry
 
 load_dotenv()
 
@@ -128,6 +129,22 @@ def take_snapshot():
         )
     conn.commit()
     conn.close()
+
+    # Piggyback the station-identity registry + id-churn detection on this same
+    # fetch (no extra crawl). Isolated in its own connection + try/except so a
+    # registry hiccup never fails the occupancy snapshot. upsert runs every
+    # run; detection is gated to once per UTC day inside maybe_detect_daily.
+    try:
+        reg_conn = get_connection()
+        ensure_tables(reg_conn)
+        n_reg = upsert_registry(reg_conn, nl_features, captured_at)
+        churn = maybe_detect_daily(reg_conn, captured_at)
+        reg_conn.close()
+        print(f"[{captured_at.isoformat()}] Registry: {n_reg} stations upserted"
+              + (f", churn detected {churn}" if churn is not None else ", detection skipped (already ran today)"),
+              flush=True)
+    except Exception as exc:  # noqa: BLE001 -- registry must never break the snapshot
+        print(f"[{captured_at.isoformat()}] Registry step failed (non-fatal): {exc}", flush=True)
 
     known_occupancy = [r[3] for r in rows if r[3] is not None]
     avg_occupancy = round(sum(known_occupancy) / len(known_occupancy), 1) if known_occupancy else None
