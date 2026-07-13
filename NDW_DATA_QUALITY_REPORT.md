@@ -62,3 +62,40 @@ While building a fused "golden record" charging-station dataset (matching NDW ag
 ## Suggested report to NDW
 
 The three CPOs involved (`EFL` / E-Flux by Road, `NUO` / Vattenfall InCharge, `DAE` / DAEN Mobility) appear to be submitting non-Dutch locations under the `NL-` ID prefix with `country: NLD`. Worth asking NDW's data quality team to check with these CPOs whether their DOT-NL feed submission is scoped correctly to NL-only locations, or whether the `country` field is being set incorrectly/defaulted rather than derived from the actual address.
+
+---
+
+## Register party-ID vs delivery party-ID mismatch (onboarding gap analysis)
+
+**Found:** 2026-07-13, while building the CPO onboarding-gap report (registered
+NL CPOs in the Benelux ID-register vs. parties actually delivering to DOT-NL).
+
+Many brands do **not** deliver to DOT-NL under their own registered OCPI
+party-ID. They deliver via their CPMS/platform provider's party-ID, so the
+brand's register ID shows zero delivery even though their stations are present.
+The `operator_name` field is the only bridge between the two.
+
+Confirmed examples:
+
+| Register brand (party-ID) | Actually delivered under | operator_name in feed | Stations |
+|---|---|---|---|
+| TotalEnergies Charging Services (`NL-TCB` / `NL-TOT`) | `NL-GFX` (GreenFlux) | TotalEnergies | 8 982 |
+| EQUANS Infra & Mobility (`NL-VLN`) | `NL-LMS` (LastMileSolutions) | EQUANS | 11 652 |
+| Opcharge (`NL-OPC`) | `NL-SGM` | Opcharge | 393 |
+| Pluq Assets (`NL-PLQ`) | `NL-EFL` (E-Flux by Road) | Pluq | 386 |
+
+Note `NL-SGM` is registered to "NRG Accounting" but carries Opcharge + Mick-E
+stations; `NL-EFL` (E-Flux) carries E-Flux + Pluq + Heijmans. So one platform
+party-ID aggregates multiple brands.
+
+**Impact:** any coverage/onboarding analysis that matches the register party-ID
+directly against the DOT-NL id prefix will **over-report the gap** — it flags
+brands as "not connected" that are fully present under a platform ID. It also
+means DOT-NL cannot attribute a station to its true operating brand from the
+party-ID alone; the `operator_name` free-text field is load-bearing and
+un-validated.
+
+**Suggested to NDW:** consider capturing the operating brand as a structured,
+validated field (not just free-text `operator_name`), and/or maintain a
+party-ID → operating-brand mapping, so coverage and data-quality can be
+measured per real operator rather than per submitting platform.
