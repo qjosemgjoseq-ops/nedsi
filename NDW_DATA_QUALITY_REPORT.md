@@ -99,3 +99,36 @@ un-validated.
 validated field (not just free-text `operator_name`), and/or maintain a
 party-ID → operating-brand mapping, so coverage and data-quality can be
 measured per real operator rather than per submitting platform.
+
+---
+
+## OCPI station-id instability (id-churn) in DOT-NL
+
+**Found:** 2026-07-14, while validating a "verdwenen stations" (disappeared) check
+by diffing cached DOT-NL city snapshots (~2026-06-04) against the current
+snapshot (2026-07-13), ~5-6 weeks apart, for Utrecht/Amsterdam/Rotterdam/Den Haag.
+
+Of 168 station ids present in the old snapshot but absent from the new one, a
+re-keying cross-check (is a station still at the same physical spot?) showed:
+
+| Classification | Count | Meaning |
+|---|---|---|
+| Re-keyed, same operator | 146 | station still there, got a **new OCPI id** |
+| Re-keyed, different operator | 3 | spot taken over by another CPO |
+| Truly removed | 19 | no station at that location anymore |
+
+So **~89% of "disappearances" are id-churn, not removals**: ~4.7% of stations
+(146 / 3.075) were assigned a brand-new OCPI id within ~5 weeks while staying
+physically in place. Concentrated in TotalEnergies (`NL-GFX`) and the
+platform-delivered brands.
+
+**Impact:** unstable ids break any longitudinal use of DOT-NL — you cannot
+track a station over time, maintain history, or reliably reference it from an
+external system, because its id silently changes. It also inflates naive
+"disappeared/new station" metrics ~9x. Any real disappeared-station monitoring
+MUST be coordinate-aware (removal vs re-keying), not id-based.
+
+**Suggested to NDW:** ask CPOs/platforms to keep OCPI `evse_id`/location ids
+stable across submissions (OCPI intends ids to be persistent identifiers), and
+consider NDW-side detection of same-location re-keying to preserve station
+history.
